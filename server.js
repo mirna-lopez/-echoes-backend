@@ -5,6 +5,7 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+app.set('trust proxy', 1);
 
 const HF_API_URL = 'https://api-inference.huggingface.co/models/google/flan-t5-base';
 const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
