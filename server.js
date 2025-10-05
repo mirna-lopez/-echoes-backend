@@ -7,8 +7,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 app.set('trust proxy', 1);
 
-const HF_API_URL = 'https://api-inference.huggingface.co/models/facebook/blenderbot-400M-distill';
-const HF_TOKEN = process.env.HUGGINGFACE_TOKEN;
+// Anthropic Claude Configuration
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
@@ -58,7 +59,7 @@ const chatLimiter = rateLimit({
 
 const dailyLimitMiddleware = (req, res, next) => {
   resetDailyCounter();
-  const DAILY_LIMIT = parseInt(process.env.DAILY_REQUEST_LIMIT || '500');
+  const DAILY_LIMIT = parseInt(process.env.DAILY_REQUEST_LIMIT || '200');
   if (dailyRequestCount >= DAILY_LIMIT) {
     return res.status(429).json({
       error: 'Daily demo limit reached.',
@@ -68,69 +69,33 @@ const dailyLimitMiddleware = (req, res, next) => {
   next();
 };
 
-async function callHuggingFace(prompt, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = await fetch(HF_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${HF_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: {
-            max_new_tokens: 200,
-            temperature: 0.8,
-            top_p: 0.9,
-            return_full_text: false
-          }
-        })
-      });
+async function callClaude(messages) {
+  // Extract system message and convert format for Claude
+  const systemMessage = messages.find(m => m.role === 'system');
+  const conversationMessages = messages.filter(m => m.role !== 'system');
 
-      if (response.status === 503) {
-        console.log('Model loading, waiting 10 seconds...');
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        continue;
-      }
+  const response = await fetch(ANTHROPIC_API_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-3-5-haiku-20241022',
+      max_tokens: 200,
+      system: systemMessage ? systemMessage.content : '',
+      messages: conversationMessages
+    })
+  });
 
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`HF API error: ${response.status} - ${error}`);
-      }
-
-      const data = await response.json();
-      
-      if (Array.isArray(data) && data[0]?.generated_text) {
-        return data[0].generated_text;
-      } else if (data.generated_text) {
-        return data.generated_text;
-      } else if (typeof data === 'string') {
-        return data;
-      }
-      
-      throw new Error('Unexpected response format');
-      
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      console.log(`Retry ${i + 1}/${retries}:`, error.message);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Claude API error: ${response.status} - ${error}`);
   }
-}
 
-function buildPrompt(messages) {
-  let prompt = '';
-  for (const msg of messages) {
-    if (msg.role === 'system') {
-      prompt += `<s>[INST] You are playing a character. ${msg.content} [/INST]\n\n`;
-    } else if (msg.role === 'user') {
-      prompt += `[INST] ${msg.content} [/INST]\n`;
-    } else if (msg.role === 'assistant') {
-      prompt += `${msg.content}\n\n`;
-    }
-  }
-  return prompt;
+  const data = await response.json();
+  return data.content[0].text;
 }
 
 app.get('/health', (req, res) => {
@@ -139,9 +104,9 @@ app.get('/health', (req, res) => {
     status: 'online',
     demoActive: isDemoActive(),
     requestsToday: dailyRequestCount,
-    dailyLimit: parseInt(process.env.DAILY_REQUEST_LIMIT || '500'),
-    remainingToday: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '500') - dailyRequestCount),
-    aiProvider: 'Hugging Face (FREE)'
+    dailyLimit: parseInt(process.env.DAILY_REQUEST_LIMIT || '200'),
+    remainingToday: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '200') - dailyRequestCount),
+    aiProvider: 'Anthropic Claude 3.5 Haiku'
   });
 });
 
@@ -155,7 +120,8 @@ app.post('/api/verify', (req, res) => {
     return res.json({
       valid: true,
       message: 'Password verified successfully',
-      requestsRemaining: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '500') - dailyRequestCount)
+      requestsRemaining: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '200') - dailyRequestCount),
+      aiProvider: 'Claude 3.5 Haiku'
     });
   }
   res.status(401).json({ valid: false, error: 'Invalid password' });
@@ -172,21 +138,20 @@ app.post('/api/chat', validatePassword, chatLimiter, dailyLimitMiddleware, async
       return res.status(400).json({ error: 'Invalid request. Messages array is required.' });
     }
 
-    const limitedMessages = messages.slice(-8);
-    const prompt = buildPrompt(limitedMessages);
-    const ghostResponse = await callHuggingFace(prompt);
+    const limitedMessages = messages.slice(-12);
+    const ghostResponse = await callClaude(limitedMessages);
 
     dailyRequestCount++;
 
     res.json({
       message: ghostResponse.trim(),
       isDemoMode: true,
-      aiProvider: 'Hugging Face',
-      requestsRemaining: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '500') - dailyRequestCount)
+      aiProvider: 'Claude 3.5 Haiku',
+      requestsRemaining: Math.max(0, parseInt(process.env.DAILY_REQUEST_LIMIT || '200') - dailyRequestCount)
     });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Claude API Error:', error);
     res.status(500).json({
       error: 'An error occurred.',
       details: process.env.NODE_ENV === 'development' ? error.message : 'Please try again'
@@ -199,7 +164,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🎮 Echoes of the Estate - Demo Server (FREE)`);
+  console.log(`🎮 Echoes of the Estate - Demo Server`);
   console.log(`📡 Port ${PORT}`);
-  console.log(`🤖 Hugging Face AI`);
+  console.log(`🤖 Anthropic Claude 3.5 Haiku`);
 });
