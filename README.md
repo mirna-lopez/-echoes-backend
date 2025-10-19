@@ -380,6 +380,6 @@ app.use('/api/', limiter);
 
 ---
 
-**Built for BUILD Halloween Hacks 2024** 🎃
+**Built for BUILD Halloween Hacks 2025** 🎃
 
 *"The spirits respond to those who listen..."*
